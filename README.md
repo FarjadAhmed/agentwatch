@@ -5,7 +5,7 @@ A flight recorder for Claude Code sessions.
 You let Claude Code run on your machine — sometimes for hours, sometimes with auto-approve. agentwatch silently logs every action, so you can come back and see exactly what happened.
 
 ```bash
-npm install -g agentwatch
+npm install -g agentwatch-dev
 agentwatch install
 ```
 
@@ -96,7 +96,7 @@ The hooks run asynchronously with a 3-second timeout and silent failure — they
 
 ```bash
 agentwatch uninstall     # removes hooks from Claude Code settings
-npm uninstall -g agentwatch
+npm uninstall -g agentwatch-dev
 ```
 
 Session logs are preserved in `~/.agentwatch/` — delete manually if you want.

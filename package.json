@@ -1,9 +1,9 @@
 {
-  "name": "agentwatch",
+  "name": "agentwatch-dev",
   "version": "1.0.0",
   "description": "See what AI coding agents do on your machine. Session logging + dashboard for Claude Code.",
   "bin": {
-    "agentwatch": "./bin/agentwatch"
+    "agentwatch": "bin/agentwatch"
   },
   "files": [
     "bin/",
@@ -29,6 +29,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/FarjadAhmed/agentwatch"
+    "url": "git+https://github.com/FarjadAhmed/agentwatch.git"
   }
 }
