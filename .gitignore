@@ -1,0 +1,4 @@
+node_modules/
+.agentwatch/
+.DS_Store
+*.log

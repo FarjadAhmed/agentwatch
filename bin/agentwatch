@@ -1,0 +1,656 @@
+#!/usr/bin/env node
+// agentwatch CLI — View what AI agents did on your machine
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
+const SESSIONS_DIR = path.join(AGENTWATCH_DIR, 'sessions');
+const { assessRisk } = require(path.join(__dirname, '..', 'src', 'risk'));
+
+const args = process.argv.slice(2);
+const command = args[0] || 'help';
+
+const COLORS = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  bgRed: '\x1b[41m',
+  bgYellow: '\x1b[43m',
+};
+
+const c = (color, text) => `${COLORS[color]}${text}${COLORS.reset}`;
+
+switch (command) {
+  case 'sessions':
+  case 'ls':
+    listSessions(args.includes('--all'));
+    break;
+  case 'show':
+  case 'view':
+    showSession(args[1]);
+    break;
+  case 'last':
+    showSession('last');
+    break;
+  case 'live':
+    liveFollow(args[1]);
+    break;
+  case 'dash':
+  case 'ui':
+    require(path.join(__dirname, '..', 'src', 'dashboard.js'));
+    break;
+  case 'stats':
+    showStats();
+    break;
+  case 'files':
+    showFiles(args[1]);
+    break;
+  case 'commands':
+    showCommands(args[1]);
+    break;
+  case 'danger':
+    showDangerousActions(args[1]);
+    break;
+  case 'status':
+    showStatus();
+    break;
+  case 'install':
+    install();
+    break;
+  case 'uninstall':
+    uninstall();
+    break;
+  case 'help':
+  default:
+    showHelp();
+    break;
+}
+
+// ─── Commands ───
+
+function showHelp() {
+  console.log(`
+${c('bold', 'agentwatch')} — See what AI agents do on your machine
+
+${c('bold', 'USAGE')}
+  agentwatch ${c('cyan', '<command>')} [options]
+
+${c('bold', 'COMMANDS')}
+  ${c('cyan', 'sessions')}     List all recorded sessions (--all for full list)
+  ${c('cyan', 'last')}         Show the most recent session
+  ${c('cyan', 'show')} <id>    Show detailed timeline for a session
+  ${c('cyan', 'live')} [id]    Live-follow a session (default: latest)
+  ${c('cyan', 'commands')} [id] Show all bash commands run (default: latest)
+  ${c('cyan', 'files')} [id]   Show all files touched (default: latest)
+  ${c('cyan', 'danger')} [id]  Highlight potentially dangerous actions
+  ${c('cyan', 'dash')}         Open web dashboard in browser
+  ${c('cyan', 'stats')}        Aggregate stats across all sessions
+  ${c('cyan', 'install')}      Add agentwatch hooks to Claude Code
+  ${c('cyan', 'uninstall')}    Remove agentwatch hooks from Claude Code
+  ${c('cyan', 'status')}       Check if agentwatch is installed and working
+
+${c('bold', 'QUICK START')}
+  agentwatch install                 # One-time setup
+  ${c('dim', '# ... use Claude Code normally ...')}
+  agentwatch last                    # Review what just happened
+
+${c('bold', 'EXAMPLES')}
+  agentwatch last                    # Review what just happened
+  agentwatch dash                    # Open web UI in browser
+  agentwatch live                    # Watch current session in real-time
+  agentwatch danger                  # Flag risky actions from latest session
+  agentwatch commands                # List all shell commands from latest session
+`);
+}
+
+function listSessions(showAll) {
+  const index = loadIndex();
+  const sessions = Object.entries(index).sort((a, b) =>
+    new Date(b[1].started) - new Date(a[1].started)
+  );
+
+  if (sessions.length === 0) {
+    console.log(c('dim', 'No sessions recorded yet. Run `agentwatch install` to get started.'));
+    return;
+  }
+
+  const limit = showAll ? sessions.length : 20;
+  const showing = sessions.slice(0, limit);
+
+  console.log(`\n${c('bold', 'Recorded Sessions')} (${sessions.length} total)\n`);
+  console.log(c('dim', '  ID            Started                  Tools   Cmds    Files   Dir'));
+  console.log(c('dim', '  ──────────    ─────────────────────    ─────   ────    ─────   ───'));
+
+  for (const [id, s] of showing) {
+    const shortId = id.substring(0, 10);
+    const started = formatTime(s.started);
+    const tools = String(s.tool_count).padStart(5);
+    const cmds = String(s.commands_run).padStart(4);
+    const files = String(s.files_touched.length).padStart(5);
+    const dir = shortenPath(s.cwd);
+    console.log(`  ${c('cyan', shortId)}    ${started}    ${tools}   ${cmds}    ${files}   ${c('dim', dir)}`);
+  }
+
+  if (!showAll && sessions.length > limit) {
+    console.log(c('dim', `\n  ... ${sessions.length - limit} older sessions hidden. Use ${c('cyan', 'agentwatch sessions --all')} to show all.`));
+  }
+  console.log();
+}
+
+function showSession(idOrLast) {
+  const { id, entries, meta } = resolveSession(idOrLast);
+  if (!entries) return;
+
+  console.log(`\n${c('bold', 'Session')} ${c('cyan', id.substring(0, 10))}`);
+  console.log(`${c('dim', 'Started:')} ${formatTime(meta.started)}`);
+  console.log(`${c('dim', 'Dir:')}     ${meta.cwd || '(unknown)'}`);
+  console.log(`${c('dim', 'Model:')}   ${meta.model || 'unknown'}`);
+  console.log(`${c('dim', 'Actions:')} ${entries.length}\n`);
+
+  console.log(c('bold', 'Timeline'));
+  console.log(c('dim', '────────'));
+
+  for (const entry of entries) {
+    const time = formatTimeShort(entry.timestamp);
+    const icon = toolIcon(entry.tool);
+    const desc = formatEntry(entry);
+    console.log(`  ${c('dim', time)}  ${icon}  ${desc}`);
+  }
+  console.log();
+}
+
+function showCommands(idOrLast) {
+  const { entries } = resolveSession(idOrLast || 'last');
+  if (!entries) return;
+
+  const cmds = entries.filter(e => e.tool === 'Bash');
+  console.log(`\n${c('bold', 'Bash Commands')} (${cmds.length} total)\n`);
+
+  for (const entry of cmds) {
+    const time = formatTimeShort(entry.timestamp);
+    const exitColor = entry.exit_code === 0 ? 'green' : entry.exit_code ? 'red' : 'dim';
+    const exitStr = entry.exit_code !== null ? c(exitColor, `[${entry.exit_code}]`) : '';
+    console.log(`  ${c('dim', time)}  ${exitStr} ${c('white', entry.command || '(empty)')}`);
+  }
+  console.log();
+}
+
+function showFiles(idOrLast) {
+  const { entries } = resolveSession(idOrLast || 'last');
+  if (!entries) return;
+
+  const fileActions = entries.filter(e => e.file);
+  const fileMap = {};
+
+  for (const e of fileActions) {
+    if (!fileMap[e.file]) fileMap[e.file] = [];
+    fileMap[e.file].push(e.tool);
+  }
+
+  console.log(`\n${c('bold', 'Files Touched')} (${Object.keys(fileMap).length} unique)\n`);
+
+  for (const [file, actions] of Object.entries(fileMap)) {
+    const actionStr = [...new Set(actions)].map(a => {
+      switch (a) {
+        case 'Read': return c('blue', 'R');
+        case 'Write': return c('red', 'W');
+        case 'Edit': return c('yellow', 'E');
+        default: return c('dim', a[0]);
+      }
+    }).join('');
+    console.log(`  [${actionStr}] ${shortenPath(file)}`);
+  }
+
+  console.log(`\n  ${c('dim', 'Legend:')} ${c('blue', 'R')}ead ${c('yellow', 'E')}dit ${c('red', 'W')}rite\n`);
+}
+
+function showDangerousActions(idOrLast) {
+  const { entries } = resolveSession(idOrLast || 'last');
+  if (!entries) return;
+
+  const dangerous = [];
+
+  for (const entry of entries) {
+    const risks = assessRisk(entry);
+    if (risks.length > 0) {
+      dangerous.push({ entry, risks });
+    }
+  }
+
+  if (dangerous.length === 0) {
+    console.log(`\n${c('green', 'No potentially dangerous actions detected.')}\n`);
+    return;
+  }
+
+  console.log(`\n${c('bgRed', ' DANGER ')} ${c('bold', `${dangerous.length} potentially risky actions found`)}\n`);
+
+  for (const { entry, risks } of dangerous) {
+    const time = formatTimeShort(entry.timestamp);
+    const icon = toolIcon(entry.tool);
+    console.log(`  ${c('dim', time)}  ${icon}  ${formatEntry(entry)}`);
+    for (const risk of risks) {
+      const levelColor = risk.level === 'critical' ? 'red' : risk.level === 'warning' ? 'yellow' : 'cyan';
+      console.log(`           ${c(levelColor, `[${risk.level}]`)} ${risk.msg}`);
+    }
+    console.log();
+  }
+}
+
+function showStats() {
+  const index = loadIndex();
+  const sessions = Object.values(index);
+
+  if (sessions.length === 0) {
+    console.log(c('dim', 'No sessions recorded yet.'));
+    return;
+  }
+
+  let totalTools = 0;
+  let totalCmds = 0;
+  let totalFiles = new Set();
+  let toolBreakdown = {};
+
+  for (const s of sessions) {
+    totalTools += s.tool_count;
+    totalCmds += s.commands_run;
+    s.files_touched.forEach(f => totalFiles.add(f));
+    for (const [tool, count] of Object.entries(s.tools_used)) {
+      toolBreakdown[tool] = (toolBreakdown[tool] || 0) + count;
+    }
+  }
+
+  console.log(`\n${c('bold', 'Aggregate Stats')}\n`);
+  console.log(`  Sessions:       ${c('cyan', sessions.length)}`);
+  console.log(`  Total actions:  ${c('cyan', totalTools)}`);
+  console.log(`  Bash commands:  ${c('yellow', totalCmds)}`);
+  console.log(`  Unique files:   ${c('green', totalFiles.size)}`);
+  console.log();
+  console.log(`  ${c('bold', 'Tool breakdown:')}`);
+
+  const sorted = Object.entries(toolBreakdown).sort((a, b) => b[1] - a[1]);
+  for (const [tool, count] of sorted) {
+    const bar = '█'.repeat(Math.min(40, Math.round(count / totalTools * 40)));
+    console.log(`    ${tool.padEnd(12)} ${String(count).padStart(5)}  ${c('cyan', bar)}`);
+  }
+  console.log();
+}
+
+function liveFollow(idOrLast) {
+  const { id, logPath } = resolveSession(idOrLast || 'last', true);
+  if (!logPath) return;
+
+  console.log(`\n${c('bold', 'Live following session')} ${c('cyan', id.substring(0, 10))}`);
+  console.log(c('dim', 'Press Ctrl+C to stop\n'));
+
+  let lastSize = 0;
+  try {
+    const stat = fs.statSync(logPath);
+    lastSize = stat.size;
+    // Print existing entries first
+    const existing = fs.readFileSync(logPath, 'utf8').trim();
+    if (existing) {
+      for (const line of existing.split('\n')) {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.type === 'session_start') continue;
+          const time = formatTimeShort(entry.timestamp);
+          const icon = toolIcon(entry.tool);
+          console.log(`  ${c('dim', time)}  ${icon}  ${formatEntry(entry)}`);
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+
+  // Watch for new entries
+  const interval = setInterval(() => {
+    try {
+      const stat = fs.statSync(logPath);
+      if (stat.size > lastSize) {
+        const fd = fs.openSync(logPath, 'r');
+        const buf = Buffer.alloc(stat.size - lastSize);
+        fs.readSync(fd, buf, 0, buf.length, lastSize);
+        fs.closeSync(fd);
+        lastSize = stat.size;
+
+        const lines = buf.toString().trim().split('\n');
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === 'session_start') continue;
+            const time = formatTimeShort(entry.timestamp);
+            const icon = toolIcon(entry.tool);
+            console.log(`  ${c('dim', time)}  ${icon}  ${formatEntry(entry)}`);
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }, 500);
+
+  process.on('SIGINT', () => {
+    clearInterval(interval);
+    console.log(c('dim', '\nStopped.'));
+    process.exit(0);
+  });
+}
+
+function showStatus() {
+  console.log(`\n${c('bold', 'agentwatch status')}\n`);
+
+  // Check hooks installed
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  let hooksInstalled = false;
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    hooksInstalled = ['PostToolUse', 'SessionStart'].every(event =>
+      settings.hooks?.[event]?.some(h => h.hooks?.some(hh => hh.command?.includes('agentwatch')))
+    );
+  } catch (e) {}
+
+  const hookStatus = hooksInstalled
+    ? c('green', 'installed')
+    : c('red', 'not installed') + c('dim', ' — run ') + c('cyan', 'agentwatch install');
+  console.log(`  Hooks:      ${hookStatus}`);
+
+  // Check log directory
+  const sessionsDir = path.join(os.homedir(), '.agentwatch', 'sessions');
+  let sessionCount = 0;
+  let totalSize = 0;
+  try {
+    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.jsonl'));
+    sessionCount = files.length;
+    for (const f of files) {
+      totalSize += fs.statSync(path.join(sessionsDir, f)).size;
+    }
+  } catch (e) {}
+
+  console.log(`  Sessions:   ${c('cyan', sessionCount)} recorded`);
+  console.log(`  Log size:   ${c('cyan', formatBytes(totalSize))}`);
+  console.log(`  Log path:   ${c('dim', '~/.agentwatch/sessions/')}`);
+
+  // Check index
+  const index = loadIndex();
+  const indexCount = Object.keys(index).length;
+  const lastSession = Object.values(index).sort((a, b) =>
+    new Date(b.started) - new Date(a.started)
+  )[0];
+
+  if (lastSession) {
+    console.log(`  Last active: ${c('dim', formatTime(lastSession.last_activity || lastSession.started))}`);
+  }
+
+  console.log();
+
+  if (hooksInstalled && sessionCount > 0) {
+    console.log(`  ${c('green', 'Everything looks good.')} agentwatch is logging your Claude Code sessions.`);
+  } else if (hooksInstalled) {
+    console.log(`  ${c('yellow', 'Hooks installed but no sessions yet.')} Start a Claude Code session to begin logging.`);
+  } else {
+    console.log(`  ${c('yellow', 'Not yet set up.')} Run ${c('cyan', 'agentwatch install')} to get started.`);
+  }
+  console.log();
+}
+
+function install() {
+  const claudeDir = path.join(os.homedir(), '.claude');
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch (e) {
+    // If no settings.json exists, create one
+    if (!fs.existsSync(claudeDir)) {
+      console.log(c('red', 'Claude Code config directory not found (~/.claude/).'));
+      console.log(c('dim', 'Make sure Claude Code is installed first.'));
+      process.exit(1);
+    }
+    settings = {};
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+
+  const hookDir = path.resolve(__dirname, '..', 'src');
+  const postToolCmd = `node "${path.join(hookDir, 'hook.js')}"`;
+  const sessionStartCmd = `node "${path.join(hookDir, 'session-start-hook.js')}"`;
+
+  // Add to PostToolUse
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+  const hasPostHook = settings.hooks.PostToolUse.some(h =>
+    h.hooks?.some(hh => hh.command?.includes('agentwatch'))
+  );
+  if (!hasPostHook) {
+    settings.hooks.PostToolUse.push({
+      hooks: [{ type: 'command', command: postToolCmd }]
+    });
+  }
+
+  // Add to SessionStart
+  if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
+  const hasSessionHook = settings.hooks.SessionStart.some(h =>
+    h.hooks?.some(hh => hh.command?.includes('agentwatch'))
+  );
+  if (!hasSessionHook) {
+    settings.hooks.SessionStart.push({
+      hooks: [{ type: 'command', command: sessionStartCmd }]
+    });
+  }
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  console.log(`\n${c('green', 'agentwatch installed successfully!')}`);
+  console.log(`${c('dim', 'Hooks added to')} ${settingsPath}`);
+  console.log(`${c('dim', 'Logs will appear in')} ~/.agentwatch/sessions/`);
+  console.log(`\n${c('dim', 'Run')} ${c('cyan', 'agentwatch last')} ${c('dim', 'after a Claude Code session to review.')}\n`);
+}
+
+function uninstall() {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch (e) {
+    console.log(c('red', `Cannot read ${settingsPath}`));
+    process.exit(1);
+  }
+
+  if (settings.hooks) {
+    for (const event of ['PostToolUse', 'SessionStart']) {
+      if (settings.hooks[event]) {
+        settings.hooks[event] = settings.hooks[event].filter(h =>
+          !h.hooks?.some(hh => hh.command?.includes('agentwatch'))
+        );
+        if (settings.hooks[event].length === 0) delete settings.hooks[event];
+      }
+    }
+  }
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  console.log(`\n${c('green', 'agentwatch uninstalled.')} Hooks removed from settings.json`);
+  console.log(`${c('dim', 'Session logs preserved in')} ~/.agentwatch/\n`);
+}
+
+// ─── Helpers ───
+
+function loadIndex() {
+  const index = {};
+  let files;
+  try {
+    files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
+  } catch (e) {
+    return index;
+  }
+
+  for (const file of files) {
+    const id = path.basename(file, '.jsonl');
+    const filePath = path.join(SESSIONS_DIR, file);
+    try {
+      const content = fs.readFileSync(filePath, 'utf8').trim();
+      if (!content) continue;
+
+      let started = null, cwd = null, model = null;
+      let toolCount = 0;
+      const toolsUsed = {};
+      const filesTouched = new Set();
+      let commandsRun = 0;
+      let lastActivity = null;
+
+      for (const line of content.split('\n')) {
+        if (!line) continue;
+        const entry = JSON.parse(line);
+        if (entry.type === 'session_start') {
+          started = entry.timestamp;
+          cwd = entry.cwd;
+          model = entry.model;
+          continue;
+        }
+        toolCount++;
+        toolsUsed[entry.tool] = (toolsUsed[entry.tool] || 0) + 1;
+        if (entry.file) filesTouched.add(entry.file);
+        if (entry.tool === 'Bash') commandsRun++;
+        lastActivity = entry.timestamp;
+        if (!started) started = entry.timestamp;
+      }
+
+      index[id] = {
+        started,
+        cwd,
+        model,
+        tool_count: toolCount,
+        tools_used: toolsUsed,
+        files_touched: [...filesTouched],
+        commands_run: commandsRun,
+        last_activity: lastActivity,
+      };
+    } catch (e) {
+      // Skip corrupted files
+    }
+  }
+
+  return index;
+}
+
+function resolveSession(idOrLast, returnPath = false) {
+  const index = loadIndex();
+  const sessions = Object.entries(index).sort((a, b) =>
+    new Date(b[1].started) - new Date(a[1].started)
+  );
+
+  if (sessions.length === 0) {
+    console.log(c('dim', 'No sessions recorded yet.'));
+    return {};
+  }
+
+  let id;
+  if (!idOrLast || idOrLast === 'last') {
+    id = sessions[0][0];
+  } else {
+    // Match by prefix
+    const match = sessions.find(([sid]) => sid.startsWith(idOrLast));
+    if (!match) {
+      console.log(c('red', `No session matching "${idOrLast}"`));
+      return {};
+    }
+    id = match[0];
+  }
+
+  const logPath = path.join(SESSIONS_DIR, `${id}.jsonl`);
+  if (returnPath) return { id, logPath };
+
+  try {
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
+    const parsed = lines.filter(Boolean).map(l => JSON.parse(l));
+    const meta = {};
+    const startEntry = parsed.find(e => e.type === 'session_start');
+    if (startEntry) {
+      meta.started = startEntry.timestamp;
+      meta.cwd = startEntry.cwd;
+      meta.model = startEntry.model;
+    }
+    const entries = parsed.filter(e => e.type !== 'session_start');
+    if (!meta.started && entries.length > 0) meta.started = entries[0].timestamp;
+    return { id, entries, meta, logPath };
+  } catch (e) {
+    console.log(c('dim', `No log file for session ${id.substring(0, 10)}`));
+    return {};
+  }
+}
+
+function toolIcon(tool) {
+  const icons = {
+    Bash: c('yellow', 'SH '),
+    Write: c('red', 'WRT'),
+    Edit: c('magenta', 'EDT'),
+    Read: c('blue', 'RD '),
+    Glob: c('cyan', 'GLB'),
+    Grep: c('cyan', 'GRP'),
+    WebFetch: c('green', 'WEB'),
+    Agent: c('white', 'AGT'),
+  };
+  return icons[tool] || c('dim', tool?.substring(0, 3)?.padEnd(3) || '???');
+}
+
+function formatEntry(entry) {
+  switch (entry.tool) {
+    case 'Bash':
+      const cmd = truncate(entry.command, 80) || '(empty)';
+      return `${c('white', cmd)}`;
+    case 'Write':
+      return `${c('red', 'write')} ${shortenPath(entry.file)} ${c('dim', `(${formatBytes(entry.bytes)})`)}`;
+    case 'Edit':
+      return `${c('magenta', 'edit')} ${shortenPath(entry.file)}`;
+    case 'Read':
+      return `${c('blue', 'read')} ${shortenPath(entry.file)}`;
+    case 'Glob':
+      return `${c('cyan', 'glob')} ${entry.pattern}`;
+    case 'Grep':
+      return `${c('cyan', 'grep')} ${entry.pattern}`;
+    case 'WebFetch':
+      return `${c('green', 'fetch')} ${entry.url}`;
+    case 'Agent':
+      return `${c('white', 'agent')} ${entry.description || entry.subagent_type || ''}`;
+    default:
+      return `${entry.tool}`;
+  }
+}
+
+function formatTime(iso) {
+  if (!iso) return '(unknown)'.padEnd(21);
+  const d = new Date(iso);
+  return d.toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }).padEnd(21);
+}
+
+function formatTimeShort(iso) {
+  if (!iso) return '??:??:??';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function shortenPath(p) {
+  if (!p) return '(unknown)';
+  const home = os.homedir();
+  if (p.startsWith(home)) return '~' + p.substring(home.length);
+  return p;
+}
+
+function truncate(str, max) {
+  if (!str) return null;
+  if (str.length <= max) return str;
+  return str.substring(0, max) + '...';
+}

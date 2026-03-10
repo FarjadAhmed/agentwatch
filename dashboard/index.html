@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agentwatch</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="layout">
+  <div class="header">
+    <h1><span>agent</span>watch</h1>
+    <div class="header-stats">
+      <div><span class="refresh-dot"></span> auto-refresh</div>
+      <div>Sessions: <span class="stat-value" id="total-sessions">0</span></div>
+      <div>Total actions: <span class="stat-value" id="total-actions">0</span></div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="sidebar-title">Sessions</div>
+    <div id="session-list"></div>
+  </div>
+
+  <div class="main" id="main">
+    <div class="empty-state">
+      <div>Select a session from the sidebar</div>
+      <div>or run <code>agentwatch live</code> in terminal</div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
