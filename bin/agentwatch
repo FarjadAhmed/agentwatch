@@ -7,6 +7,8 @@ const os = require('os');
 
 const { assessRisk } = require(path.join(__dirname, '..', 'src', 'risk'));
 const { SESSIONS_DIR, buildIndex: _buildIndex } = require(path.join(__dirname, '..', 'src', 'sessions'));
+const { analyzeRange, sessionAnomalies, formatDuration, durationMs, exportSession, projectName } = require(path.join(__dirname, '..', 'src', 'analytics'));
+const { getSessionCost, formatCost, formatTokens } = require(path.join(__dirname, '..', 'src', 'cost'));
 const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
 
 const args = process.argv.slice(2);
@@ -25,6 +27,7 @@ const COLORS = {
   white: '\x1b[37m',
   bgRed: '\x1b[41m',
   bgYellow: '\x1b[43m',
+  bgCyan: '\x1b[46m',
 };
 
 const c = (color, text) => `${COLORS[color]}${text}${COLORS.reset}`;
@@ -51,6 +54,18 @@ switch (command) {
   case 'stats':
     showStats();
     break;
+  case 'report':
+    showReport(args[1]);
+    break;
+  case 'hotspots':
+    showHotspots(args[1]);
+    break;
+  case 'export': {
+    const exportArgs = args.slice(1).filter(a => !a.startsWith('--'));
+    const format = args.includes('--json') ? 'json' : 'md';
+    doExport(exportArgs[0], format);
+    break;
+  }
   case 'files':
     showFiles(args[1]);
     break;
@@ -59,6 +74,9 @@ switch (command) {
     break;
   case 'danger':
     showDangerousActions(args[1]);
+    break;
+  case 'cost':
+    showCost(args[1]);
     break;
   case 'status':
     showStatus();
@@ -87,32 +105,37 @@ ${c('bold', 'agentwatch')} — See what AI agents do on your machine
 ${c('bold', 'USAGE')}
   agentwatch ${c('cyan', '<command>')} [options]
 
-${c('bold', 'COMMANDS')}
-  ${c('cyan', 'sessions')}     List all recorded sessions (--all for full list)
-  ${c('cyan', 'last')}         Show the most recent session
-  ${c('cyan', 'show')} <id>    Show detailed timeline for a session
-  ${c('cyan', 'live')} [id]    Live-follow a session (default: latest)
-  ${c('cyan', 'commands')} [id] Show all bash commands run (default: latest)
-  ${c('cyan', 'files')} [id]   Show all files touched (default: latest)
-  ${c('cyan', 'danger')} [id]  Highlight potentially dangerous actions
-  ${c('cyan', 'dash')}         Open web dashboard in browser
-  ${c('cyan', 'stats')}        Aggregate stats across all sessions
-  ${c('cyan', 'prune')} [days]  Delete sessions older than N days (default: 30)
-  ${c('cyan', 'install')}      Add agentwatch hooks to Claude Code
-  ${c('cyan', 'uninstall')}    Remove agentwatch hooks from Claude Code
-  ${c('cyan', 'status')}       Check if agentwatch is installed and working
+${c('bold', 'SESSION REVIEW')}
+  ${c('cyan', 'last')}              Show the most recent session
+  ${c('cyan', 'show')} <id>         Show detailed timeline for a session
+  ${c('cyan', 'sessions')}          List all recorded sessions (--all for full list)
+  ${c('cyan', 'live')} [id]         Live-follow a session (default: latest)
+  ${c('cyan', 'commands')} [id]     Show all bash commands run
+  ${c('cyan', 'files')} [id]        Show all files touched
+  ${c('cyan', 'danger')} [id]       Highlight potentially dangerous actions
+  ${c('cyan', 'export')} [id]       Export session as markdown (--json for JSON)
+  ${c('cyan', 'cost')} [id]         Token usage and cost breakdown for a session
 
-${c('bold', 'QUICK START')}
-  agentwatch install                 # One-time setup
-  ${c('dim', '# ... use Claude Code normally ...')}
-  agentwatch last                    # Review what just happened
+${c('bold', 'ANALYTICS')}
+  ${c('cyan', 'report')} [period]   Weekly report with project breakdown, hotspots, patterns
+                    Period: week (default), month, or number of days
+  ${c('cyan', 'hotspots')} [n]      Top N files AI modifies most across all sessions
+  ${c('cyan', 'stats')}             Aggregate stats with per-project breakdown
+
+${c('bold', 'MANAGEMENT')}
+  ${c('cyan', 'dash')}              Open web dashboard in browser
+  ${c('cyan', 'status')}            Check if agentwatch is installed and working
+  ${c('cyan', 'prune')} [days]      Delete sessions older than N days (default: 30)
+  ${c('cyan', 'install')}           Add agentwatch hooks to Claude Code
+  ${c('cyan', 'uninstall')}         Remove agentwatch hooks from Claude Code
 
 ${c('bold', 'EXAMPLES')}
-  agentwatch last                    # Review what just happened
-  agentwatch dash                    # Open web UI in browser
-  agentwatch live                    # Watch current session in real-time
-  agentwatch danger                  # Flag risky actions from latest session
-  agentwatch commands                # List all shell commands from latest session
+  agentwatch last                    # What just happened?
+  agentwatch report                  # Weekly summary across all projects
+  agentwatch report month            # Monthly summary
+  agentwatch hotspots 10             # Top 10 most-modified files
+  agentwatch export --json > out.json # Export latest session as JSON
+  agentwatch danger                  # Flag risky actions
 `);
 }
 
@@ -138,14 +161,18 @@ function listSessions(showAll) {
     if (dateLabel !== lastDateLabel) {
       lastDateLabel = dateLabel;
       console.log(`  ${c('bold', dateLabel)}`);
-      console.log(c('dim', '  ────────────────────────────────────────────────────────────────'));
+      console.log(c('dim', '  ──────────────────────────────────────────────────────────────────────'));
     }
     const shortId = id.substring(0, 8);
     const time = s.started ? new Date(s.started).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '??:??';
+    const dur = formatDuration(durationMs(s)).padEnd(5);
     const tools = String(s.tool_count).padStart(4);
     const cmds = String(s.commands_run).padStart(3);
     const project = getProjectName(s.cwd);
-    console.log(`    ${c('cyan', shortId)}  ${c('dim', time)}  ${tools} actions  ${cmds} cmds  ${c('white', project)}`);
+    const costInfo = getSessionCost(id, s.cwd);
+    const costStr = costInfo?.cost != null ? c(costInfo.cost > 1 ? 'yellow' : 'green', formatCost(costInfo.cost).padStart(7)) : c('dim', '      -');
+    const riskStr = s.risk_count > 0 ? c('red', ` ${s.risk_count} risks`) : '';
+    console.log(`    ${c('cyan', shortId)}  ${c('dim', time)}  ${c('dim', dur)}  ${costStr}  ${tools} actions  ${c('white', project)}${riskStr}`);
   }
 
   if (!showAll && sessions.length > limit) {
@@ -177,11 +204,51 @@ function showSession(idOrLast) {
   const { id, entries, meta } = resolveSession(idOrLast);
   if (!entries) return;
 
+  const dur = entries.length > 0
+    ? durationMs({ started: meta.started, last_activity: entries[entries.length - 1].timestamp })
+    : 0;
+
   console.log(`\n${c('bold', 'Session')} ${c('cyan', id.substring(0, 10))}`);
-  console.log(`${c('dim', 'Started:')} ${formatTime(meta.started)}`);
-  console.log(`${c('dim', 'Dir:')}     ${meta.cwd || '(unknown)'}`);
-  console.log(`${c('dim', 'Model:')}   ${meta.model || 'unknown'}`);
-  console.log(`${c('dim', 'Actions:')} ${entries.length}\n`);
+  console.log(`${c('dim', 'Started:')}  ${formatTime(meta.started)}`);
+  console.log(`${c('dim', 'Duration:')} ${formatDuration(dur)}`);
+  console.log(`${c('dim', 'Dir:')}      ${meta.cwd || '(unknown)'}`);
+  console.log(`${c('dim', 'Model:')}    ${meta.model || 'unknown'}`);
+  console.log(`${c('dim', 'Actions:')}  ${entries.length}`);
+
+  // Cost info
+  const costInfo = getSessionCost(id, meta.cwd);
+  if (costInfo) {
+    const costColor = costInfo.cost > 1 ? 'yellow' : 'green';
+    console.log(`${c('dim', 'Cost:')}     ${c(costColor, formatCost(costInfo.cost))} (${formatTokens(costInfo.tokens.input + costInfo.tokens.cacheRead)} in, ${formatTokens(costInfo.tokens.output)} out, ${formatTokens(costInfo.tokens.cacheWrite)} cache write)`);
+  }
+  console.log();
+
+  // Quick risk summary at top
+  const allRisks = entries.flatMap(e => assessRisk(e)).filter(r => r.level !== 'info');
+  if (allRisks.length > 0) {
+    const crits = allRisks.filter(r => r.level === 'critical').length;
+    const warns = allRisks.filter(r => r.level === 'warning').length;
+    let riskLine = '';
+    if (crits > 0) riskLine += c('red', `${crits} critical`);
+    if (crits > 0 && warns > 0) riskLine += ', ';
+    if (warns > 0) riskLine += c('yellow', `${warns} warning${warns > 1 ? 's' : ''}`);
+    console.log(`${c('bgRed', ' RISKS ')} ${riskLine}\n`);
+  }
+
+  // Bash pass/fail summary
+  const bashEntries = entries.filter(e => e.tool === 'Bash');
+  if (bashEntries.length > 0) {
+    const withExitCode = bashEntries.filter(e => e.exit_code !== null && e.exit_code !== undefined);
+    const passed = withExitCode.filter(e => e.exit_code === 0).length;
+    const failed = withExitCode.filter(e => e.exit_code !== 0).length;
+    if (withExitCode.length > 0) {
+      const passRate = Math.round((passed / withExitCode.length) * 100);
+      const passColor = passRate >= 80 ? 'green' : passRate >= 50 ? 'yellow' : 'red';
+      console.log(`${c('dim', 'Bash:')}     ${bashEntries.length} commands, ${c(passColor, `${passRate}% passed`)}${failed > 0 ? c('red', `, ${failed} failed`) : ''}\n`);
+    } else {
+      console.log(`${c('dim', 'Bash:')}     ${bashEntries.length} commands\n`);
+    }
+  }
 
   console.log(c('bold', 'Timeline'));
   console.log(c('dim', '────────'));
@@ -200,7 +267,14 @@ function showCommands(idOrLast) {
   if (!entries) return;
 
   const cmds = entries.filter(e => e.tool === 'Bash');
-  console.log(`\n${c('bold', 'Bash Commands')} (${cmds.length} total)\n`);
+  const withExitCode = cmds.filter(e => e.exit_code !== null && e.exit_code !== undefined);
+  const passed = withExitCode.filter(e => e.exit_code === 0).length;
+  const failed = withExitCode.filter(e => e.exit_code !== 0).length;
+
+  let header = `\n${c('bold', 'Bash Commands')} (${cmds.length} total`;
+  if (withExitCode.length > 0) header += `, ${c('green', `${passed} passed`)}, ${c('red', `${failed} failed`)}`;
+  header += ')\n';
+  console.log(header);
 
   for (const entry of cmds) {
     const time = formatTimeShort(entry.timestamp);
@@ -272,9 +346,64 @@ function showDangerousActions(idOrLast) {
   }
 }
 
+function showCost(idOrLast) {
+  const { id, meta } = resolveSession(idOrLast || 'last');
+  if (!id) return;
+
+  const costInfo = getSessionCost(id, meta.cwd);
+  if (!costInfo) {
+    console.log(`\n${c('dim', 'No cost data found for this session.')}`);
+    console.log(c('dim', 'Cost data is read from Claude Code\'s logs in ~/.claude/projects/'));
+    console.log(c('dim', 'It may not be available for older sessions.\n'));
+    return;
+  }
+
+  const t = costInfo.tokens;
+  console.log(`\n${c('bold', 'Cost Breakdown')} — session ${c('cyan', id.substring(0, 10))}\n`);
+  console.log(`  Model:          ${c('white', costInfo.model || 'unknown')}`);
+  console.log(`  API calls:      ${c('cyan', costInfo.messageCount)}`);
+  console.log();
+
+  // Token breakdown
+  console.log(`  ${c('bold', 'Tokens')}`);
+  console.log(`  ──────`);
+  console.log(`    Input:         ${c('cyan', formatTokens(t.input).padStart(8))}`);
+  console.log(`    Output:        ${c('yellow', formatTokens(t.output).padStart(8))}`);
+  console.log(`    Cache write:   ${c('magenta', formatTokens(t.cacheWrite).padStart(8))}`);
+  console.log(`    Cache read:    ${c('green', formatTokens(t.cacheRead).padStart(8))}`);
+  console.log(`    ${'─'.repeat(28)}`);
+  console.log(`    Total:         ${c('white', formatTokens(costInfo.totalTokens).padStart(8))}`);
+  console.log();
+
+  if (costInfo.cost !== null) {
+    const costColor = costInfo.cost > 1 ? 'yellow' : 'green';
+    console.log(`  ${c('bold', 'Estimated Cost')}`);
+    console.log(`  ──────────────`);
+    console.log(`    ${c(costColor, formatCost(costInfo.cost))}`);
+
+    // Per-category cost breakdown
+    const perM = 1_000_000;
+    const { PRICING } = require(path.join(__dirname, '..', 'src', 'cost'));
+    const pricing = Object.values(PRICING).find(p => {
+      // rough match
+      return true;
+    });
+    // Just show totals — the exact breakdown is the formatCost above
+    if (costInfo.cost > 0) {
+      const cacheRatio = t.cacheRead / (t.input + t.cacheRead + t.cacheWrite || 1);
+      console.log(`    ${c('dim', `Cache hit rate: ${Math.round(cacheRatio * 100)}%`)}`);
+    }
+  } else {
+    console.log(`  ${c('dim', 'Cost estimate unavailable (unknown model pricing)')}`);
+  }
+  console.log();
+}
+
 function showStats() {
   const index = loadIndex();
-  const sessions = Object.values(index);
+  const sessions = Object.entries(index).sort((a, b) =>
+    new Date(b[1].started) - new Date(a[1].started)
+  );
 
   if (sessions.length === 0) {
     console.log(c('dim', 'No sessions recorded yet.'));
@@ -284,31 +413,206 @@ function showStats() {
   let totalTools = 0;
   let totalCmds = 0;
   let totalFiles = new Set();
+  let totalDur = 0;
   let toolBreakdown = {};
+  let projectMap = {};
 
-  for (const s of sessions) {
+  let totalCost = 0;
+  let costAvailable = false;
+
+  for (const [id, s] of sessions) {
     totalTools += s.tool_count;
     totalCmds += s.commands_run;
+    totalDur += durationMs(s);
     s.files_touched.forEach(f => totalFiles.add(f));
     for (const [tool, count] of Object.entries(s.tools_used)) {
       toolBreakdown[tool] = (toolBreakdown[tool] || 0) + count;
     }
+    const project = projectName(s.cwd);
+    if (!projectMap[project]) projectMap[project] = { sessions: 0, actions: 0, duration: 0, cost: 0 };
+    projectMap[project].sessions++;
+    projectMap[project].actions += s.tool_count;
+    projectMap[project].duration += durationMs(s);
+    const costInfo = getSessionCost(id, s.cwd);
+    if (costInfo?.cost != null) {
+      totalCost += costInfo.cost;
+      projectMap[project].cost += costInfo.cost;
+      costAvailable = true;
+    }
   }
 
-  console.log(`\n${c('bold', 'Aggregate Stats')}\n`);
-  console.log(`  Sessions:       ${c('cyan', sessions.length)}`);
-  console.log(`  Total actions:  ${c('cyan', totalTools)}`);
-  console.log(`  Bash commands:  ${c('yellow', totalCmds)}`);
-  console.log(`  Unique files:   ${c('green', totalFiles.size)}`);
-  console.log();
-  console.log(`  ${c('bold', 'Tool breakdown:')}`);
+  const avgDur = sessions.length > 0 ? totalDur / sessions.length : 0;
 
+  console.log(`\n${c('bold', 'Aggregate Stats')}\n`);
+  console.log(`  Sessions:        ${c('cyan', sessions.length)}`);
+  console.log(`  Total time:      ${c('cyan', formatDuration(totalDur))} (avg ${formatDuration(avgDur)}/session)`);
+  console.log(`  Total actions:   ${c('cyan', totalTools)}`);
+  console.log(`  Bash commands:   ${c('yellow', totalCmds)}`);
+  console.log(`  Unique files:    ${c('green', totalFiles.size)}`);
+  if (costAvailable) {
+    const costColor = totalCost > 10 ? 'yellow' : 'green';
+    console.log(`  Total cost:      ${c(costColor, formatCost(totalCost))}`);
+  }
+
+  // Per-project breakdown
+  const projectList = Object.entries(projectMap)
+    .sort((a, b) => b[1].sessions - a[1].sessions);
+
+  if (projectList.length > 1) {
+    console.log(`\n  ${c('bold', 'Per project:')}`);
+    for (const [name, stats] of projectList) {
+      const sessStr = String(stats.sessions).padStart(3);
+      const actStr = String(stats.actions).padStart(5);
+      const durStr = formatDuration(stats.duration).padStart(6);
+      const costStr = costAvailable && stats.cost > 0 ? `  ${formatCost(stats.cost)}` : '';
+      console.log(`    ${c('white', name.padEnd(20))} ${sessStr} sessions  ${actStr} actions  ${durStr}${costStr}`);
+    }
+  }
+
+  // Tool breakdown
+  console.log(`\n  ${c('bold', 'Tool breakdown:')}`);
   const sorted = Object.entries(toolBreakdown).sort((a, b) => b[1] - a[1]);
   for (const [tool, count] of sorted) {
     const bar = '█'.repeat(Math.min(40, Math.round(count / totalTools * 40)));
     console.log(`    ${tool.padEnd(12)} ${String(count).padStart(5)}  ${c('cyan', bar)}`);
   }
   console.log();
+}
+
+function showReport(periodArg) {
+  const index = loadIndex();
+  if (Object.keys(index).length === 0) {
+    console.log(c('dim', 'No sessions recorded yet.'));
+    return;
+  }
+
+  let days = 7;
+  let periodLabel = 'Weekly';
+  if (periodArg === 'month') { days = 30; periodLabel = 'Monthly'; }
+  else if (periodArg && !isNaN(parseInt(periodArg, 10))) { days = parseInt(periodArg, 10); periodLabel = `${days}-day`; }
+
+  const endMs = Date.now();
+  const startMs = endMs - days * 86400000;
+  const startDate = new Date(startMs);
+  const endDate = new Date(endMs);
+  const dateRange = `${fmtDate(startDate)} — ${fmtDate(endDate)}`;
+
+  const report = analyzeRange(SESSIONS_DIR, index, startMs, endMs);
+
+  if (report.sessionCount === 0) {
+    console.log(`\n${c('dim', `No sessions in the last ${days} days.`)}\n`);
+    return;
+  }
+
+  const avgDur = report.sessionCount > 0 ? report.totalDuration / report.sessionCount : 0;
+
+  console.log(`\n${c('bold', `${periodLabel} Report`)} ${c('dim', dateRange)}`);
+  console.log(c('dim', '━'.repeat(60)));
+
+  // Overview
+  console.log(`\n  ${c('cyan', report.sessionCount)} sessions across ${c('cyan', report.projects.length)} project${report.projects.length !== 1 ? 's' : ''}`);
+  console.log(`  ${c('cyan', formatDuration(report.totalDuration))} total (avg ${formatDuration(avgDur)}/session)`);
+  console.log(`  ${c('cyan', report.totalActions)} actions, ${c('yellow', report.totalBashCmds)} bash commands`);
+
+  if (report.totalBashCmds > 0 && report.bashPassRate !== null) {
+    const passColor = report.bashPassRate >= 80 ? 'green' : report.bashPassRate >= 50 ? 'yellow' : 'red';
+    console.log(`  Bash pass rate: ${c(passColor, `${report.bashPassRate}%`)} (${c('red', report.totalBashFails)} failed)`);
+  }
+
+  if (report.totalCriticals > 0 || report.totalWarnings > 0) {
+    let riskLine = '  Risks: ';
+    if (report.totalCriticals > 0) riskLine += c('red', `${report.totalCriticals} critical`);
+    if (report.totalCriticals > 0 && report.totalWarnings > 0) riskLine += ', ';
+    if (report.totalWarnings > 0) riskLine += c('yellow', `${report.totalWarnings} warnings`);
+    console.log(riskLine);
+  }
+
+  // Per-project breakdown
+  if (report.projects.length > 0) {
+    console.log(`\n${c('bold', '  Projects')}`);
+    console.log(c('dim', '  ────────'));
+    for (const p of report.projects) {
+      const durStr = formatDuration(p.duration).padStart(6);
+      const actStr = String(p.actions).padStart(5);
+      console.log(`    ${c('white', p.name.padEnd(22))} ${p.sessions} session${p.sessions !== 1 ? 's' : ' '}  ${durStr}  ${actStr} actions`);
+    }
+  }
+
+  // File hotspots
+  const topFiles = report.hotspots.slice(0, 10);
+  if (topFiles.length > 0) {
+    console.log(`\n${c('bold', '  File Hotspots')} ${c('dim', '(most modified)')}`);
+    console.log(c('dim', '  ──────────────'));
+    for (const h of topFiles) {
+      const mods = String(h.modifications).padStart(3);
+      const sessCount = String(h.sessions).padStart(2);
+      console.log(`    ${c('yellow', mods)} edits  ${c('dim', sessCount)} sessions  ${shortenPath(h.file)}`);
+    }
+  }
+
+  // Command patterns
+  const topCmds = report.commands.slice(0, 10);
+  if (topCmds.length > 0) {
+    console.log(`\n${c('bold', '  Command Patterns')} ${c('dim', '(most frequent)')}`);
+    console.log(c('dim', '  ─────────────────'));
+    for (const cmd of topCmds) {
+      const countStr = String(cmd.count).padStart(4);
+      const passStr = cmd.passRate !== null ? `  ${c(cmd.passRate >= 80 ? 'green' : cmd.passRate >= 50 ? 'yellow' : 'red', `${String(cmd.passRate).padStart(3)}%`)}` : '      ';
+      console.log(`    ${c('cyan', countStr)}x${passStr}  ${c('white', truncate(cmd.command, 55))}`);
+    }
+  }
+
+  console.log();
+}
+
+function showHotspots(nArg) {
+  const n = parseInt(nArg, 10) || 15;
+  const index = loadIndex();
+  if (Object.keys(index).length === 0) {
+    console.log(c('dim', 'No sessions recorded yet.'));
+    return;
+  }
+
+  const report = analyzeRange(SESSIONS_DIR, index, 0, Date.now());
+
+  if (report.hotspots.length === 0) {
+    console.log(`\n${c('dim', 'No file modifications recorded.')}\n`);
+    return;
+  }
+
+  const top = report.hotspots.slice(0, n);
+
+  console.log(`\n${c('bold', 'File Hotspots')} — files AI modifies most across all sessions\n`);
+
+  const maxMods = top[0].modifications;
+  for (const h of top) {
+    const mods = String(h.modifications).padStart(3);
+    const bar = '█'.repeat(Math.max(1, Math.round(h.modifications / maxMods * 20)));
+    const sessCount = String(h.sessions).padStart(2);
+    console.log(`  ${c('yellow', mods)} edits  ${c('dim', sessCount)} sessions  ${c('cyan', bar)}  ${shortenPath(h.file)}`);
+  }
+
+  console.log(`\n  ${c('dim', 'Files modified most often may indicate complexity, fragility, or active development.')}\n`);
+}
+
+function doExport(idOrLast, format) {
+  const { id, meta } = resolveSession(idOrLast || 'last');
+  if (!id) return;
+
+  const index = loadIndex();
+  const sessionMeta = index[id] || meta;
+  const output = exportSession(SESSIONS_DIR, id, sessionMeta, format);
+
+  if (!output) {
+    console.error(c('red', 'Failed to export session.'));
+    process.exit(1);
+  }
+
+  // If stdout is a TTY, print with a header. Otherwise just output raw (for piping).
+  if (process.stdout.isTTY) {
+    console.log(c('dim', `Exported session ${id.substring(0, 10)} as ${format === 'json' ? 'JSON' : 'Markdown'}:\n`));
+  }
+  process.stdout.write(output);
 }
 
 function liveFollow(idOrLast) {
@@ -405,7 +709,6 @@ function showStatus() {
 
   // Check index
   const index = loadIndex();
-  const indexCount = Object.keys(index).length;
   const lastSession = Object.values(index).sort((a, b) =>
     new Date(b.started) - new Date(a.started)
   )[0];
@@ -629,6 +932,10 @@ function formatEntry(entry) {
     default:
       return `${entry.tool}`;
   }
+}
+
+function fmtDate(d) {
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
 }
 
 function formatTime(iso) {

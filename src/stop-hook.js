@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // agentwatch — Stop hook
-// Shows a macOS notification with session summary when Claude Code exits
+// Notifies on risks and anomalies when Claude Code exits
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 const { assessRisk } = require('./risk');
+const { buildIndex } = require('./sessions');
+const { sessionAnomalies } = require('./analytics');
 
 const SESSIONS_DIR = path.join(os.homedir(), '.agentwatch', 'sessions');
 
@@ -29,8 +31,8 @@ process.stdin.on('end', () => {
     if (!content) process.exit(0);
 
     let actionCount = 0;
-    let riskCount = 0;
     let criticalCount = 0;
+    let warningCount = 0;
 
     for (const line of content.split('\n')) {
       if (!line) continue;
@@ -39,29 +41,49 @@ process.stdin.on('end', () => {
       actionCount++;
       const risks = assessRisk(entry);
       for (const r of risks) {
-        riskCount++;
         if (r.level === 'critical') criticalCount++;
+        else if (r.level === 'warning') warningCount++;
       }
     }
 
     if (actionCount === 0) process.exit(0);
 
-    // Build notification
-    const title = 'agentwatch: session ended';
-    let body = `${actionCount} action${actionCount !== 1 ? 's' : ''}`;
-    if (riskCount > 0) {
-      body += `, ${riskCount} risk${riskCount !== 1 ? 's' : ''} detected — run agentwatch danger`;
+    // Check for anomalies
+    const index = buildIndex();
+    const anomalies = sessionAnomalies(SESSIONS_DIR, index, sessionId);
+
+    const riskCount = criticalCount + warningCount;
+
+    // Only notify if there are risks or anomalies
+    if (riskCount === 0 && anomalies.length === 0) process.exit(0);
+
+    let title, body;
+
+    if (riskCount > 0 && anomalies.length > 0) {
+      title = 'agentwatch: risks + anomalies';
+      body = buildRiskBody(criticalCount, warningCount) + ' | ' + anomalies[0];
+    } else if (riskCount > 0) {
+      title = criticalCount > 0 ? 'agentwatch: risks detected' : 'agentwatch: warnings detected';
+      body = buildRiskBody(criticalCount, warningCount) + ' — run agentwatch danger';
     } else {
-      body += ', no risks detected';
+      title = 'agentwatch: unusual session';
+      body = anomalies.join('; ');
     }
 
-    const sound = riskCount > 0 ? 'Funk' : 'Pop';
-    notify(title, body, sound);
+    notify(title, body, 'Funk');
   } catch (e) {
     // Silent fail
   }
   process.exit(0);
 });
+
+function buildRiskBody(criticalCount, warningCount) {
+  let body = '';
+  if (criticalCount > 0) body += `${criticalCount} critical`;
+  if (criticalCount > 0 && warningCount > 0) body += ', ';
+  if (warningCount > 0) body += `${warningCount} warning${warningCount !== 1 ? 's' : ''}`;
+  return body;
+}
 
 function notify(title, body, sound) {
   if (process.platform === 'darwin') {
