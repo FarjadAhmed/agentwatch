@@ -79,6 +79,60 @@ body {
   padding: 8px 16px 6px;
 }
 
+/* Search */
+.sidebar-search {
+  padding: 6px 12px 10px;
+}
+
+.sidebar-search input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  font-family: inherit;
+  outline: none;
+}
+
+.sidebar-search input:focus {
+  border-color: var(--accent);
+}
+
+.sidebar-search input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Date group headers */
+.date-group-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  padding: 12px 16px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.date-group-count {
+  font-size: 9px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 5px;
+  color: var(--text-dim);
+}
+
+.sidebar-empty {
+  padding: 20px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 .session-item {
   padding: 10px 16px;
   cursor: pointer;
@@ -92,11 +146,39 @@ body {
   border-left-color: var(--accent);
 }
 
-.session-id {
+.session-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.session-project {
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-risk-badge {
+  font-size: 9px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(248, 81, 73, 0.2);
+  color: var(--red);
+  padding: 0 4px;
+}
+
+.session-id-inline {
   font-family: monospace;
+  color: var(--text-muted);
 }
 
 .session-meta {
@@ -126,6 +208,14 @@ body {
   color: var(--red);
   border-color: rgba(248, 81, 73, 0.3);
 }
+
+.tag.tool-bash { color: var(--yellow); border-color: rgba(210, 153, 34, 0.3); }
+.tag.tool-read { color: var(--accent); border-color: rgba(88, 166, 255, 0.3); }
+.tag.tool-write { color: var(--red); border-color: rgba(248, 81, 73, 0.3); }
+.tag.tool-edit { color: var(--purple); border-color: rgba(188, 140, 255, 0.3); }
+.tag.tool-grep, .tag.tool-glob { color: var(--cyan); border-color: rgba(57, 210, 192, 0.3); }
+.tag.tool-webfetch { color: var(--green); border-color: rgba(63, 185, 80, 0.3); }
+.tag.tool-agent { color: var(--pink); border-color: rgba(247, 120, 186, 0.3); }
 
 /* Main content */
 .main {

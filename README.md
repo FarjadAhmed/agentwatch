@@ -44,6 +44,7 @@ agentwatch files         # all files touched (Read/Edit/Write)
 agentwatch danger        # flag potentially dangerous actions
 agentwatch dash          # open web dashboard at localhost:3737
 agentwatch stats         # aggregate stats across all sessions
+agentwatch prune [days]  # delete sessions older than N days (default: 30)
 agentwatch status        # check if agentwatch is installed and working
 agentwatch install       # add hooks to Claude Code
 agentwatch uninstall     # remove hooks (logs are preserved)

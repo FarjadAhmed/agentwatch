@@ -26,27 +26,119 @@ async function fetchSession(id) {
 
 function renderSidebar() {
   const list = document.getElementById('session-list');
+  const searchInput = document.getElementById('session-search');
+  const filter = (searchInput ? searchInput.value : '').toLowerCase().trim();
+
   const sorted = Object.entries(state.sessions).sort((a, b) =>
     new Date(b[1].started) - new Date(a[1].started)
   );
 
-  list.innerHTML = sorted.map(([id, s]) => {
-    const active = id === state.activeSession ? 'active' : '';
-    const short = id.substring(0, 10);
-    const time = formatTime(s.started);
-    const dir = shortenPath(s.cwd);
+  const filtered = filter ? sorted.filter(([id, s]) => {
+    const dir = (s.cwd || '').toLowerCase();
+    const label = sessionLabel(s).toLowerCase();
+    return dir.includes(filter) || label.includes(filter) || id.toLowerCase().includes(filter);
+  }) : sorted;
 
-    let tags = '<div class="session-tags">';
-    tags += '<span class="tag">' + s.tool_count + ' actions</span>';
-    if (s.commands_run > 0) tags += '<span class="tag">' + s.commands_run + ' cmds</span>';
-    tags += '</div>';
+  // Group by date
+  const groups = {};
+  for (const [id, s] of filtered) {
+    const label = dateBucket(s.started);
+    if (!groups[label]) groups[label] = [];
+    groups[label].push([id, s]);
+  }
 
-    return '<div class="session-item ' + active + '" onclick="fetchSession(\'' + id + '\')">' +
-      '<div class="session-id">' + short + '</div>' +
-      '<div class="session-meta">' + time + ' &middot; ' + escHtml(dir) + '</div>' +
-      tags +
-      '</div>';
-  }).join('');
+  let html = '';
+  for (const [label, sessions] of Object.entries(groups)) {
+    html += '<div class="date-group-header">' + escHtml(label) + ' <span class="date-group-count">' + sessions.length + '</span></div>';
+    for (const [id, s] of sessions) {
+      const active = id === state.activeSession ? 'active' : '';
+      const short = id.substring(0, 8);
+      const time = formatTimeOnly(s.started);
+      const project = sessionLabel(s);
+
+      let tags = '<div class="session-tags">';
+      // Tool breakdown pills
+      const topTools = Object.entries(s.tools_used || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      for (const [tool, count] of topTools) {
+        tags += '<span class="tag tool-' + tool.toLowerCase() + '">' + count + ' ' + toolShortName(tool) + '</span>';
+      }
+      if (s.files_touched && s.files_touched.length > 0) {
+        tags += '<span class="tag">' + s.files_touched.length + ' files</span>';
+      }
+      tags += '</div>';
+
+      html += '<div class="session-item ' + active + '" onclick="fetchSession(\'' + id + '\')">' +
+        '<div class="session-header-row"><div class="session-project">' + escHtml(project) + '</div>' +
+        (hasDangers(s) ? '<span class="session-risk-badge">' + s.risk_count + '</span>' : '') +
+        '</div>' +
+        '<div class="session-meta">' + time + ' &middot; ' + s.tool_count + ' actions &middot; <span class="session-id-inline">' + short + '</span></div>' +
+        tags +
+        '</div>';
+    }
+  }
+
+  if (filtered.length === 0 && filter) {
+    html = '<div class="sidebar-empty">No sessions matching &ldquo;' + escHtml(filter) + '&rdquo;</div>';
+  }
+
+  list.innerHTML = html;
+}
+
+function dateBucket(iso) {
+  if (!iso) return 'Unknown';
+  const d = new Date(iso);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sessionDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today - sessionDay) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return d.toLocaleDateString('en-US', { weekday: 'long' });
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function projectName(cwd) {
+  if (!cwd) return null;
+  const parts = cwd.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || cwd;
+}
+
+function sessionLabel(s) {
+  // Try project name from cwd
+  const project = projectName(s.cwd);
+  if (project) return project;
+  // Infer from most common file path
+  if (s.files_touched && s.files_touched.length > 0) {
+    const first = s.files_touched[0];
+    const parts = first.split('/');
+    // Find the project-level directory (typically after home dir)
+    for (var i = parts.length - 2; i >= 0; i--) {
+      if (['src', 'lib', 'bin', 'test', 'tests', 'node_modules', '.claude'].indexOf(parts[i]) === -1) {
+        return parts[i];
+      }
+    }
+    return parts[parts.length - 2] || 'Session';
+  }
+  return 'Session';
+}
+
+function hasDangers(s) {
+  return (s.risk_count || 0) > 0;
+}
+
+function toolShortName(tool) {
+  var names = { Bash: 'bash', Read: 'reads', Write: 'writes', Edit: 'edits', Glob: 'globs', Grep: 'greps', WebFetch: 'fetches', Agent: 'agents' };
+  return names[tool] || tool.toLowerCase();
+}
+
+function toolBadgeLabel(tool) {
+  var labels = { Bash: 'SH', Read: 'RD', Write: 'WR', Edit: 'ED', Glob: 'GL', Grep: 'GR', WebFetch: 'WEB', Agent: 'AGT' };
+  return labels[tool] || tool.substring(0, 2).toUpperCase();
+}
+
+function formatTimeOnly(iso) {
+  if (!iso) return '?';
+  return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
 function renderMain() {
@@ -128,7 +220,7 @@ function renderTimeline(entries) {
 
     html += '<li class="timeline-entry ' + hasRisk + '">' +
       '<span class="entry-time">' + formatTimeShort(e.timestamp) + '</span>' +
-      '<span class="entry-icon ' + iconClass + '">' + escHtml(e.tool.substring(0, 3).toUpperCase()) + '</span>' +
+      '<span class="entry-icon ' + iconClass + '">' + toolBadgeLabel(e.tool) + '</span>' +
       '<div class="entry-content"><div class="entry-desc">' + formatEntryHtml(e) + '</div>' + risksHtml + '</div>' +
       '</li>';
   }
@@ -506,6 +598,9 @@ function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// Search filter
+document.getElementById('session-search').addEventListener('input', renderSidebar);
 
 // Init + auto-refresh
 fetchSessions().then(function() {

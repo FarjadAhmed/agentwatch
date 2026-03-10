@@ -5,9 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
-const SESSIONS_DIR = path.join(AGENTWATCH_DIR, 'sessions');
 const { assessRisk } = require(path.join(__dirname, '..', 'src', 'risk'));
+const { SESSIONS_DIR, buildIndex: _buildIndex } = require(path.join(__dirname, '..', 'src', 'sessions'));
+const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -63,6 +63,9 @@ switch (command) {
   case 'status':
     showStatus();
     break;
+  case 'prune':
+    pruneOldSessions(args[1]);
+    break;
   case 'install':
     install();
     break;
@@ -94,6 +97,7 @@ ${c('bold', 'COMMANDS')}
   ${c('cyan', 'danger')} [id]  Highlight potentially dangerous actions
   ${c('cyan', 'dash')}         Open web dashboard in browser
   ${c('cyan', 'stats')}        Aggregate stats across all sessions
+  ${c('cyan', 'prune')} [days]  Delete sessions older than N days (default: 30)
   ${c('cyan', 'install')}      Add agentwatch hooks to Claude Code
   ${c('cyan', 'uninstall')}    Remove agentwatch hooks from Claude Code
   ${c('cyan', 'status')}       Check if agentwatch is installed and working
@@ -127,23 +131,46 @@ function listSessions(showAll) {
   const showing = sessions.slice(0, limit);
 
   console.log(`\n${c('bold', 'Recorded Sessions')} (${sessions.length} total)\n`);
-  console.log(c('dim', '  ID            Started                  Tools   Cmds    Files   Dir'));
-  console.log(c('dim', '  ──────────    ─────────────────────    ─────   ────    ─────   ───'));
 
+  let lastDateLabel = '';
   for (const [id, s] of showing) {
-    const shortId = id.substring(0, 10);
-    const started = formatTime(s.started);
-    const tools = String(s.tool_count).padStart(5);
-    const cmds = String(s.commands_run).padStart(4);
-    const files = String(s.files_touched.length).padStart(5);
-    const dir = shortenPath(s.cwd);
-    console.log(`  ${c('cyan', shortId)}    ${started}    ${tools}   ${cmds}    ${files}   ${c('dim', dir)}`);
+    const dateLabel = dateBucket(s.started);
+    if (dateLabel !== lastDateLabel) {
+      lastDateLabel = dateLabel;
+      console.log(`  ${c('bold', dateLabel)}`);
+      console.log(c('dim', '  ────────────────────────────────────────────────────────────────'));
+    }
+    const shortId = id.substring(0, 8);
+    const time = s.started ? new Date(s.started).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '??:??';
+    const tools = String(s.tool_count).padStart(4);
+    const cmds = String(s.commands_run).padStart(3);
+    const project = getProjectName(s.cwd);
+    console.log(`    ${c('cyan', shortId)}  ${c('dim', time)}  ${tools} actions  ${cmds} cmds  ${c('white', project)}`);
   }
 
   if (!showAll && sessions.length > limit) {
     console.log(c('dim', `\n  ... ${sessions.length - limit} older sessions hidden. Use ${c('cyan', 'agentwatch sessions --all')} to show all.`));
   }
   console.log();
+}
+
+function dateBucket(iso) {
+  if (!iso) return 'Unknown';
+  const d = new Date(iso);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sessionDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today - sessionDay) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return d.toLocaleDateString('en-US', { weekday: 'long' });
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function getProjectName(cwd) {
+  if (!cwd) return '(unknown)';
+  const parts = cwd.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || cwd;
 }
 
 function showSession(idOrLast) {
@@ -399,6 +426,46 @@ function showStatus() {
   console.log();
 }
 
+function pruneOldSessions(daysArg) {
+  const days = parseInt(daysArg, 10) || 30;
+  const cutoff = Date.now() - days * 86400000;
+
+  let files;
+  try {
+    files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
+  } catch (e) {
+    console.log(c('dim', 'No sessions directory found.'));
+    return;
+  }
+
+  const toDelete = [];
+  for (const file of files) {
+    const filePath = path.join(SESSIONS_DIR, file);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoff) {
+        toDelete.push({ file, path: filePath, size: stat.size });
+      }
+    } catch (e) {}
+  }
+
+  if (toDelete.length === 0) {
+    console.log(`\n${c('green', 'Nothing to prune.')} No sessions older than ${days} days.\n`);
+    return;
+  }
+
+  const totalSize = toDelete.reduce((s, f) => s + f.size, 0);
+  console.log(`\n${c('bold', 'Pruning sessions older than ' + days + ' days')}\n`);
+  console.log(`  ${c('yellow', toDelete.length)} sessions to delete (${formatBytes(totalSize)})`);
+
+  for (const f of toDelete) {
+    fs.unlinkSync(f.path);
+  }
+
+  console.log(`  ${c('green', 'Deleted ' + toDelete.length + ' session logs.')}`);
+  console.log(`  ${c('dim', 'Freed ' + formatBytes(totalSize))}\n`);
+}
+
 function install() {
   const claudeDir = path.join(os.homedir(), '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
@@ -421,26 +488,28 @@ function install() {
   const postToolCmd = `node "${path.join(hookDir, 'hook.js')}"`;
   const sessionStartCmd = `node "${path.join(hookDir, 'session-start-hook.js')}"`;
 
-  // Add to PostToolUse
+  // Add/update PostToolUse hook
   if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
-  const hasPostHook = settings.hooks.PostToolUse.some(h =>
+  const postIdx = settings.hooks.PostToolUse.findIndex(h =>
     h.hooks?.some(hh => hh.command?.includes('agentwatch'))
   );
-  if (!hasPostHook) {
-    settings.hooks.PostToolUse.push({
-      hooks: [{ type: 'command', command: postToolCmd }]
-    });
+  const postHookEntry = { hooks: [{ type: 'command', command: postToolCmd }] };
+  if (postIdx >= 0) {
+    settings.hooks.PostToolUse[postIdx] = postHookEntry;
+  } else {
+    settings.hooks.PostToolUse.push(postHookEntry);
   }
 
-  // Add to SessionStart
+  // Add/update SessionStart hook
   if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
-  const hasSessionHook = settings.hooks.SessionStart.some(h =>
+  const sessionIdx = settings.hooks.SessionStart.findIndex(h =>
     h.hooks?.some(hh => hh.command?.includes('agentwatch'))
   );
-  if (!hasSessionHook) {
-    settings.hooks.SessionStart.push({
-      hooks: [{ type: 'command', command: sessionStartCmd }]
-    });
+  const sessionHookEntry = { hooks: [{ type: 'command', command: sessionStartCmd }] };
+  if (sessionIdx >= 0) {
+    settings.hooks.SessionStart[sessionIdx] = sessionHookEntry;
+  } else {
+    settings.hooks.SessionStart.push(sessionHookEntry);
   }
 
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
@@ -479,61 +548,7 @@ function uninstall() {
 // ─── Helpers ───
 
 function loadIndex() {
-  const index = {};
-  let files;
-  try {
-    files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
-  } catch (e) {
-    return index;
-  }
-
-  for (const file of files) {
-    const id = path.basename(file, '.jsonl');
-    const filePath = path.join(SESSIONS_DIR, file);
-    try {
-      const content = fs.readFileSync(filePath, 'utf8').trim();
-      if (!content) continue;
-
-      let started = null, cwd = null, model = null;
-      let toolCount = 0;
-      const toolsUsed = {};
-      const filesTouched = new Set();
-      let commandsRun = 0;
-      let lastActivity = null;
-
-      for (const line of content.split('\n')) {
-        if (!line) continue;
-        const entry = JSON.parse(line);
-        if (entry.type === 'session_start') {
-          started = entry.timestamp;
-          cwd = entry.cwd;
-          model = entry.model;
-          continue;
-        }
-        toolCount++;
-        toolsUsed[entry.tool] = (toolsUsed[entry.tool] || 0) + 1;
-        if (entry.file) filesTouched.add(entry.file);
-        if (entry.tool === 'Bash') commandsRun++;
-        lastActivity = entry.timestamp;
-        if (!started) started = entry.timestamp;
-      }
-
-      index[id] = {
-        started,
-        cwd,
-        model,
-        tool_count: toolCount,
-        tools_used: toolsUsed,
-        files_touched: [...filesTouched],
-        commands_run: commandsRun,
-        last_activity: lastActivity,
-      };
-    } catch (e) {
-      // Skip corrupted files
-    }
-  }
-
-  return index;
+  return _buildIndex();
 }
 
 function resolveSession(idOrLast, returnPath = false) {

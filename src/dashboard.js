@@ -4,13 +4,11 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { execSync } = require('child_process');
 const { assessRisk } = require('./risk');
+const { SESSIONS_DIR, isValidSessionId, buildIndex: _buildIndex } = require('./sessions');
 
 const PORT = process.env.AGENTWATCH_PORT || 3737;
-const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
-const SESSIONS_DIR = path.join(AGENTWATCH_DIR, 'sessions');
 const DASHBOARD_DIR = path.join(__dirname, '..', 'dashboard');
 
 const MIME = {
@@ -35,7 +33,7 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/api/session') {
     const id = url.searchParams.get('id');
-    if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+    if (!id || !isValidSessionId(id)) {
       res.writeHead(400);
       res.end('Invalid session ID');
       return;
@@ -97,59 +95,5 @@ function loadIndex() {
 }
 
 function buildIndex() {
-  const index = {};
-  let files;
-  try {
-    files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
-  } catch (e) {
-    return index;
-  }
-
-  for (const file of files) {
-    const id = path.basename(file, '.jsonl');
-    const filePath = path.join(SESSIONS_DIR, file);
-    try {
-      const content = fs.readFileSync(filePath, 'utf8').trim();
-      if (!content) continue;
-
-      let started = null, cwd = null, model = null;
-      let toolCount = 0;
-      const toolsUsed = {};
-      const filesTouched = new Set();
-      let commandsRun = 0;
-      let lastActivity = null;
-
-      for (const line of content.split('\n')) {
-        if (!line) continue;
-        const entry = JSON.parse(line);
-        if (entry.type === 'session_start') {
-          started = entry.timestamp;
-          cwd = entry.cwd;
-          model = entry.model;
-          continue;
-        }
-        toolCount++;
-        toolsUsed[entry.tool] = (toolsUsed[entry.tool] || 0) + 1;
-        if (entry.file) filesTouched.add(entry.file);
-        if (entry.tool === 'Bash') commandsRun++;
-        lastActivity = entry.timestamp;
-        if (!started) started = entry.timestamp;
-      }
-
-      index[id] = {
-        started,
-        cwd,
-        model,
-        tool_count: toolCount,
-        tools_used: toolsUsed,
-        files_touched: [...filesTouched],
-        commands_run: commandsRun,
-        last_activity: lastActivity,
-      };
-    } catch (e) {
-      // Skip corrupted files
-    }
-  }
-
-  return index;
+  return _buildIndex();
 }

@@ -18,7 +18,7 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
     const sessionId = data.session_id;
-    if (!sessionId) process.exit(0);
+    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) process.exit(0);
 
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
