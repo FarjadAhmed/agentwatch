@@ -42,7 +42,7 @@ agentwatch live          # live-follow current session in terminal
 agentwatch commands      # all bash commands from latest session
 agentwatch files         # all files touched (Read/Edit/Write)
 agentwatch danger        # flag potentially dangerous actions
-agentwatch dash          # open web dashboard at localhost:3737
+agentwatch dash          # open web dashboard at agentwatch.localhost:3737
 agentwatch stats         # aggregate stats across all sessions
 agentwatch prune [days]  # delete sessions older than N days (default: 30)
 agentwatch status        # check if agentwatch is installed and working
@@ -52,7 +52,7 @@ agentwatch uninstall     # remove hooks (logs are preserved)
 
 ## Web Dashboard
 
-`agentwatch dash` opens a local dashboard at `localhost:3737` with:
+`agentwatch dash` opens a local dashboard at `agentwatch.localhost:3737` with:
 
 - **DAG view** — action flow graph with nodes sized by command length, color-coded by tool type, file dependency edges, risk indicators
 - **Timeline** — chronological list of all actions
@@ -117,6 +117,10 @@ Session logs are preserved in `~/.agentwatch/` — delete manually if you want.
 
 - Node.js 18+
 - Claude Code
+
+## Author
+
+Created by **Farjad Ahmed**
 
 ## License
 

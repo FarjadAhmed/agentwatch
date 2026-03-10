@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agentwatch dashboard — local web UI at localhost:3737
+// agentwatch dashboard — local web UI at agentwatch.localhost:3737
 
 const http = require('http');
 const fs = require('fs');
@@ -9,12 +9,16 @@ const { assessRisk } = require('./risk');
 const { SESSIONS_DIR, isValidSessionId, buildIndex: _buildIndex } = require('./sessions');
 
 const PORT = process.env.AGENTWATCH_PORT || 3737;
+const HOST = process.env.AGENTWATCH_HOST || 'agentwatch.localhost';
 const DASHBOARD_DIR = path.join(__dirname, '..', 'dashboard');
 
 const MIME = {
   '.html': 'text/html',
   '.css': 'text/css',
   '.js': 'application/javascript',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
 };
 
 // Index cache — rebuilt from JSONL files, cached with TTL
@@ -23,7 +27,7 @@ let indexCacheTime = 0;
 const INDEX_CACHE_TTL = 1500;
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const url = new URL(req.url, `http://${HOST}:${PORT}`);
 
   if (url.pathname === '/api/sessions') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -68,7 +72,8 @@ const server = http.createServer((req, res) => {
 
   try {
     const fullPath = path.join(DASHBOARD_DIR, path.basename(filePath));
-    const content = fs.readFileSync(fullPath, 'utf8');
+    const isBinary = ['.jpg', '.jpeg', '.png'].includes(ext);
+    const content = fs.readFileSync(fullPath, isBinary ? undefined : 'utf8');
     res.writeHead(200, { 'Content-Type': mime });
     res.end(content);
   } catch (e) {
@@ -77,12 +82,13 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`\n  agentwatch dashboard running at http://localhost:${PORT}\n`);
+server.listen(PORT, HOST, () => {
+  const dashUrl = `http://${HOST}:${PORT}`;
+  console.log(`\n  agentwatch dashboard running at ${dashUrl}\n`);
   try {
-    execSync(`open http://localhost:${PORT}`);
+    execSync(`open ${dashUrl}`);
   } catch (e) {
-    try { execSync(`xdg-open http://localhost:${PORT}`); } catch (e2) {}
+    try { execSync(`xdg-open ${dashUrl}`); } catch (e2) {}
   }
 });
 
