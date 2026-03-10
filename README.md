@@ -1,48 +1,31 @@
 # agentwatch
 
-See what AI coding agents do on your machine.
+A flight recorder for Claude Code sessions.
 
-agentwatch hooks into Claude Code and silently logs every action — bash commands, file reads/writes, web fetches, agent spawns — then gives you cross-session analytics, file hotspots, and anomaly detection you can't get anywhere else.
-
-## Why
-
-AI coding agents run commands on your machine. You approve them, but:
-
-- Which files does AI modify most across all your projects? (**hotspots**)
-- How much time do you actually spend in AI sessions? (**duration tracking**)
-- Was that session unusual compared to your baseline? (**anomaly detection**)
-- What commands keep failing? (**pass/fail rates**)
-- Did anything dangerous happen while you weren't paying attention? (**risk alerts**)
-
-agentwatch answers these. Zero config, zero overhead.
-
-## Install
+You let Claude Code run on your machine — sometimes for hours, sometimes with auto-approve. agentwatch silently logs every action, so you can come back and see exactly what happened.
 
 ```bash
 npm install -g agentwatch
 agentwatch install
 ```
 
-That's it. Two commands. agentwatch is now logging every Claude Code session.
+That's it. Two commands. agentwatch is now recording every Claude Code session.
 
-## Usage
+## The commands you'll actually use
 
 ```bash
-# After a session
-agentwatch last              # what just happened?
-agentwatch danger            # anything risky?
-
-# Cross-session analytics
-agentwatch report            # weekly summary across all projects
-agentwatch hotspots          # files AI modifies most (complexity signal)
-agentwatch stats             # aggregate stats with per-project breakdown
-
-# Export for sharing
-agentwatch export > session.md        # markdown for PRs
-agentwatch export --json > out.json   # structured data
+agentwatch last           # what just happened?
+agentwatch danger         # did anything risky happen?
+agentwatch report         # weekly summary across all projects
 ```
 
-### All commands
+`last` is the one you'll run most. After a session — especially a long one where you stepped away — it gives you a full timeline: every command, every file touched, every risk flagged.
+
+`danger` scans for things like `rm -rf`, `sudo`, `curl | sh`, writes to `.env` or `.ssh`, force pushes — anything you'd want to know about.
+
+`report` shows you patterns over time: which projects you're using AI on most, which files keep getting modified, which commands keep failing.
+
+## All commands
 
 ```
 SESSION REVIEW
@@ -54,6 +37,7 @@ SESSION REVIEW
   agentwatch files             all files touched (Read/Edit/Write)
   agentwatch danger            flag potentially dangerous actions
   agentwatch export [id]       export as markdown (--json for JSON)
+  agentwatch tokens [id]       token usage breakdown for a session
 
 ANALYTICS
   agentwatch report [period]   weekly report — projects, hotspots, patterns
@@ -62,35 +46,16 @@ ANALYTICS
   agentwatch stats             aggregate stats with per-project breakdown
 
 MANAGEMENT
-  agentwatch dash              open web dashboard at agentwatch.localhost:3737
+  agentwatch dash              open web dashboard in browser
   agentwatch status            check if agentwatch is installed and working
   agentwatch prune [days]      delete sessions older than N days (default: 30)
   agentwatch install           add hooks to Claude Code
   agentwatch uninstall         remove hooks (logs are preserved)
 ```
 
-## Weekly Report
+## File hotspots
 
-`agentwatch report` gives you a summary you'd actually look at:
-
-- **Per-project breakdown** — sessions, duration, and action count per project
-- **File hotspots** — most-modified files across sessions (complexity/fragility signal)
-- **Command patterns** — most frequent bash commands with pass/fail rates
-- **Risk summary** — criticals and warnings across the period
-
-Run `agentwatch report month` for a 30-day view, or `agentwatch report 14` for last 14 days.
-
-## File Hotspots
-
-`agentwatch hotspots` shows which files AI touches most across all your sessions. Files that get modified repeatedly across multiple sessions often indicate:
-
-- Complex code that needs frequent fixes
-- Active development areas
-- Fragile code that breaks when other things change
-
-## Anomaly Detection
-
-The stop hook automatically compares each session to your historical baseline. If a session has unusually high activity, touches an abnormal number of files, or accesses files outside the project directory, you get a notification. No configuration needed — it learns from your usage patterns.
+`agentwatch hotspots` shows which files AI touches most across all your sessions. Files that get modified repeatedly often indicate complex, fragile, or actively-developed code.
 
 ## What gets flagged as dangerous
 
@@ -114,28 +79,18 @@ The stop hook automatically compares each session to your historical baseline. I
 | `pip install`/`npm install` | Info |
 | `docker run` | Info |
 
-Notifications only fire for warnings and criticals — info-level events are logged silently.
+Critical and warning risks trigger macOS notifications in real-time. Info-level events are logged silently.
 
 ## How it works
 
 agentwatch uses Claude Code's [hooks system](https://docs.anthropic.com/en/docs/claude-code/hooks):
 
 1. **SessionStart hook** — records session metadata (cwd, model, timestamp)
-2. **PostToolUse hook** — logs each tool invocation, sends macOS notification on critical risks
+2. **PostToolUse hook** — logs each tool invocation, sends notification on critical risks
 3. **Stop hook** — checks for anomalies vs your historical baseline, notifies if unusual
 4. Logs stored as JSONL in `~/.agentwatch/sessions/`
 
-The hooks run asynchronously with a 3-second timeout and silent failure — they never block or interfere with Claude Code.
-
-## Data
-
-All data stays local on your machine:
-
-```
-~/.agentwatch/
-  sessions/
-    <session-id>.jsonl    # one file per session, one JSON line per action
-```
+The hooks run asynchronously with a 3-second timeout and silent failure — they never block or interfere with Claude Code. All data stays local on your machine.
 
 ## Uninstall
 
@@ -151,10 +106,6 @@ Session logs are preserved in `~/.agentwatch/` — delete manually if you want.
 - Node.js 18+
 - Claude Code
 
-## Author
-
-Created by **Farjad Ahmed**
-
 ## License
 
-MIT
+MIT — created by [Farjad Ahmed](https://github.com/FarjadAhmed)

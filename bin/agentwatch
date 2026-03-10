@@ -8,7 +8,7 @@ const os = require('os');
 const { assessRisk } = require(path.join(__dirname, '..', 'src', 'risk'));
 const { SESSIONS_DIR, buildIndex: _buildIndex } = require(path.join(__dirname, '..', 'src', 'sessions'));
 const { analyzeRange, sessionAnomalies, formatDuration, durationMs, exportSession, projectName } = require(path.join(__dirname, '..', 'src', 'analytics'));
-const { getSessionCost, formatCost, formatTokens } = require(path.join(__dirname, '..', 'src', 'cost'));
+const { getSessionCost, formatTokens } = require(path.join(__dirname, '..', 'src', 'cost'));
 const AGENTWATCH_DIR = path.join(os.homedir(), '.agentwatch');
 
 const args = process.argv.slice(2);
@@ -75,8 +75,8 @@ switch (command) {
   case 'danger':
     showDangerousActions(args[1]);
     break;
-  case 'cost':
-    showCost(args[1]);
+  case 'tokens':
+    showTokens(args[1]);
     break;
   case 'status':
     showStatus();
@@ -114,7 +114,7 @@ ${c('bold', 'SESSION REVIEW')}
   ${c('cyan', 'files')} [id]        Show all files touched
   ${c('cyan', 'danger')} [id]       Highlight potentially dangerous actions
   ${c('cyan', 'export')} [id]       Export session as markdown (--json for JSON)
-  ${c('cyan', 'cost')} [id]         Token usage and cost breakdown for a session
+  ${c('cyan', 'tokens')} [id]       Token usage breakdown for a session
 
 ${c('bold', 'ANALYTICS')}
   ${c('cyan', 'report')} [period]   Weekly report with project breakdown, hotspots, patterns
@@ -169,10 +169,8 @@ function listSessions(showAll) {
     const tools = String(s.tool_count).padStart(4);
     const cmds = String(s.commands_run).padStart(3);
     const project = getProjectName(s.cwd);
-    const costInfo = getSessionCost(id, s.cwd);
-    const costStr = costInfo?.cost != null ? c(costInfo.cost > 1 ? 'yellow' : 'green', formatCost(costInfo.cost).padStart(7)) : c('dim', '      -');
     const riskStr = s.risk_count > 0 ? c('red', ` ${s.risk_count} risks`) : '';
-    console.log(`    ${c('cyan', shortId)}  ${c('dim', time)}  ${c('dim', dur)}  ${costStr}  ${tools} actions  ${c('white', project)}${riskStr}`);
+    console.log(`    ${c('cyan', shortId)}  ${c('dim', time)}  ${c('dim', dur)}  ${tools} actions  ${c('white', project)}${riskStr}`);
   }
 
   if (!showAll && sessions.length > limit) {
@@ -215,12 +213,6 @@ function showSession(idOrLast) {
   console.log(`${c('dim', 'Model:')}    ${meta.model || 'unknown'}`);
   console.log(`${c('dim', 'Actions:')}  ${entries.length}`);
 
-  // Cost info
-  const costInfo = getSessionCost(id, meta.cwd);
-  if (costInfo) {
-    const costColor = costInfo.cost > 1 ? 'yellow' : 'green';
-    console.log(`${c('dim', 'Cost:')}     ${c(costColor, formatCost(costInfo.cost))} (${formatTokens(costInfo.tokens.input + costInfo.tokens.cacheRead)} in, ${formatTokens(costInfo.tokens.output)} out, ${formatTokens(costInfo.tokens.cacheWrite)} cache write)`);
-  }
   console.log();
 
   // Quick risk summary at top
@@ -346,25 +338,24 @@ function showDangerousActions(idOrLast) {
   }
 }
 
-function showCost(idOrLast) {
+function showTokens(idOrLast) {
   const { id, meta } = resolveSession(idOrLast || 'last');
   if (!id) return;
 
   const costInfo = getSessionCost(id, meta.cwd);
   if (!costInfo) {
-    console.log(`\n${c('dim', 'No cost data found for this session.')}`);
-    console.log(c('dim', 'Cost data is read from Claude Code\'s logs in ~/.claude/projects/'));
+    console.log(`\n${c('dim', 'No token data found for this session.')}`);
+    console.log(c('dim', 'Token data is read from Claude Code\'s logs in ~/.claude/projects/'));
     console.log(c('dim', 'It may not be available for older sessions.\n'));
     return;
   }
 
   const t = costInfo.tokens;
-  console.log(`\n${c('bold', 'Cost Breakdown')} — session ${c('cyan', id.substring(0, 10))}\n`);
+  console.log(`\n${c('bold', 'Token Usage')} — session ${c('cyan', id.substring(0, 10))}\n`);
   console.log(`  Model:          ${c('white', costInfo.model || 'unknown')}`);
-  console.log(`  API calls:      ${c('cyan', costInfo.messageCount)}`);
+  console.log(`  Messages:       ${c('cyan', costInfo.messageCount)}`);
   console.log();
 
-  // Token breakdown
   console.log(`  ${c('bold', 'Tokens')}`);
   console.log(`  ──────`);
   console.log(`    Input:         ${c('cyan', formatTokens(t.input).padStart(8))}`);
@@ -373,29 +364,15 @@ function showCost(idOrLast) {
   console.log(`    Cache read:    ${c('green', formatTokens(t.cacheRead).padStart(8))}`);
   console.log(`    ${'─'.repeat(28)}`);
   console.log(`    Total:         ${c('white', formatTokens(costInfo.totalTokens).padStart(8))}`);
-  console.log();
 
-  if (costInfo.cost !== null) {
-    const costColor = costInfo.cost > 1 ? 'yellow' : 'green';
-    console.log(`  ${c('bold', 'Estimated Cost')}`);
-    console.log(`  ──────────────`);
-    console.log(`    ${c(costColor, formatCost(costInfo.cost))}`);
-
-    // Per-category cost breakdown
-    const perM = 1_000_000;
-    const { PRICING } = require(path.join(__dirname, '..', 'src', 'cost'));
-    const pricing = Object.values(PRICING).find(p => {
-      // rough match
-      return true;
-    });
-    // Just show totals — the exact breakdown is the formatCost above
-    if (costInfo.cost > 0) {
-      const cacheRatio = t.cacheRead / (t.input + t.cacheRead + t.cacheWrite || 1);
-      console.log(`    ${c('dim', `Cache hit rate: ${Math.round(cacheRatio * 100)}%`)}`);
-    }
-  } else {
-    console.log(`  ${c('dim', 'Cost estimate unavailable (unknown model pricing)')}`);
+  if (t.cacheRead > 0 || t.cacheWrite > 0) {
+    const cacheRatio = t.cacheRead / (t.input + t.cacheRead + t.cacheWrite || 1);
+    console.log(`\n    Cache hit rate: ${c('cyan', `${Math.round(cacheRatio * 100)}%`)}`);
   }
+
+  console.log(`\n  ${c('dim', 'Note: token counts are read from Claude Code\'s internal logs')}`);
+  console.log(`  ${c('dim', 'and may not reflect actual billing. Use your Anthropic dashboard')}`);
+  console.log(`  ${c('dim', 'for accurate usage and cost data.')}`);
   console.log();
 }
 
@@ -417,9 +394,6 @@ function showStats() {
   let toolBreakdown = {};
   let projectMap = {};
 
-  let totalCost = 0;
-  let costAvailable = false;
-
   for (const [id, s] of sessions) {
     totalTools += s.tool_count;
     totalCmds += s.commands_run;
@@ -429,16 +403,10 @@ function showStats() {
       toolBreakdown[tool] = (toolBreakdown[tool] || 0) + count;
     }
     const project = projectName(s.cwd);
-    if (!projectMap[project]) projectMap[project] = { sessions: 0, actions: 0, duration: 0, cost: 0 };
+    if (!projectMap[project]) projectMap[project] = { sessions: 0, actions: 0, duration: 0 };
     projectMap[project].sessions++;
     projectMap[project].actions += s.tool_count;
     projectMap[project].duration += durationMs(s);
-    const costInfo = getSessionCost(id, s.cwd);
-    if (costInfo?.cost != null) {
-      totalCost += costInfo.cost;
-      projectMap[project].cost += costInfo.cost;
-      costAvailable = true;
-    }
   }
 
   const avgDur = sessions.length > 0 ? totalDur / sessions.length : 0;
@@ -449,10 +417,6 @@ function showStats() {
   console.log(`  Total actions:   ${c('cyan', totalTools)}`);
   console.log(`  Bash commands:   ${c('yellow', totalCmds)}`);
   console.log(`  Unique files:    ${c('green', totalFiles.size)}`);
-  if (costAvailable) {
-    const costColor = totalCost > 10 ? 'yellow' : 'green';
-    console.log(`  Total cost:      ${c(costColor, formatCost(totalCost))}`);
-  }
 
   // Per-project breakdown
   const projectList = Object.entries(projectMap)
@@ -464,8 +428,7 @@ function showStats() {
       const sessStr = String(stats.sessions).padStart(3);
       const actStr = String(stats.actions).padStart(5);
       const durStr = formatDuration(stats.duration).padStart(6);
-      const costStr = costAvailable && stats.cost > 0 ? `  ${formatCost(stats.cost)}` : '';
-      console.log(`    ${c('white', name.padEnd(20))} ${sessStr} sessions  ${actStr} actions  ${durStr}${costStr}`);
+      console.log(`    ${c('white', name.padEnd(20))} ${sessStr} sessions  ${actStr} actions  ${durStr}`);
     }
   }
 
