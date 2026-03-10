@@ -5,6 +5,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
+const { assessRisk } = require('./risk');
 
 const SESSIONS_DIR = path.join(os.homedir(), '.agentwatch', 'sessions');
 
@@ -26,6 +28,16 @@ process.stdin.on('end', () => {
     const entry = buildEntry(data);
 
     fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
+
+    // Real-time danger alerts for critical risks
+    const risks = assessRisk(entry);
+    const criticals = risks.filter(r => r.level === 'critical');
+    if (criticals.length > 0) {
+      const msgs = criticals.map(r => r.msg).join(', ');
+      const title = 'agentwatch: critical risk detected';
+      const body = `${entry.tool}: ${msgs}`;
+      notify(title, body);
+    }
   } catch (e) {
     // Silent fail — never block Claude Code
   }
@@ -93,4 +105,11 @@ function truncate(str, max) {
   if (!str) return null;
   if (str.length <= max) return str;
   return str.substring(0, max) + '...';
+}
+
+function notify(title, body) {
+  if (process.platform === 'darwin') {
+    const script = `display notification "${body.replace(/["\\]/g, ' ')}" with title "${title.replace(/["\\]/g, ' ')}" sound name "Funk"`;
+    try { execFileSync('osascript', ['-e', script], { timeout: 2000 }); } catch (e) {}
+  }
 }

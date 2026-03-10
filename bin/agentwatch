@@ -377,7 +377,7 @@ function showStatus() {
   let hooksInstalled = false;
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    hooksInstalled = ['PostToolUse', 'SessionStart'].every(event =>
+    hooksInstalled = ['PostToolUse', 'SessionStart', 'Stop'].every(event =>
       settings.hooks?.[event]?.some(h => h.hooks?.some(hh => hh.command?.includes('agentwatch')))
     );
   } catch (e) {}
@@ -487,29 +487,25 @@ function install() {
   const hookDir = path.resolve(__dirname, '..', 'src');
   const postToolCmd = `node "${path.join(hookDir, 'hook.js')}"`;
   const sessionStartCmd = `node "${path.join(hookDir, 'session-start-hook.js')}"`;
+  const stopCmd = `node "${path.join(hookDir, 'stop-hook.js')}"`;
 
-  // Add/update PostToolUse hook
-  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
-  const postIdx = settings.hooks.PostToolUse.findIndex(h =>
-    h.hooks?.some(hh => hh.command?.includes('agentwatch'))
-  );
-  const postHookEntry = { hooks: [{ type: 'command', command: postToolCmd }] };
-  if (postIdx >= 0) {
-    settings.hooks.PostToolUse[postIdx] = postHookEntry;
-  } else {
-    settings.hooks.PostToolUse.push(postHookEntry);
-  }
+  const hookDefs = [
+    { event: 'PostToolUse', command: postToolCmd },
+    { event: 'SessionStart', command: sessionStartCmd },
+    { event: 'Stop', command: stopCmd },
+  ];
 
-  // Add/update SessionStart hook
-  if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
-  const sessionIdx = settings.hooks.SessionStart.findIndex(h =>
-    h.hooks?.some(hh => hh.command?.includes('agentwatch'))
-  );
-  const sessionHookEntry = { hooks: [{ type: 'command', command: sessionStartCmd }] };
-  if (sessionIdx >= 0) {
-    settings.hooks.SessionStart[sessionIdx] = sessionHookEntry;
-  } else {
-    settings.hooks.SessionStart.push(sessionHookEntry);
+  for (const { event, command } of hookDefs) {
+    if (!settings.hooks[event]) settings.hooks[event] = [];
+    const idx = settings.hooks[event].findIndex(h =>
+      h.hooks?.some(hh => hh.command?.includes('agentwatch'))
+    );
+    const entry = { hooks: [{ type: 'command', command }] };
+    if (idx >= 0) {
+      settings.hooks[event][idx] = entry;
+    } else {
+      settings.hooks[event].push(entry);
+    }
   }
 
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
@@ -530,7 +526,7 @@ function uninstall() {
   }
 
   if (settings.hooks) {
-    for (const event of ['PostToolUse', 'SessionStart']) {
+    for (const event of ['PostToolUse', 'SessionStart', 'Stop']) {
       if (settings.hooks[event]) {
         settings.hooks[event] = settings.hooks[event].filter(h =>
           !h.hooks?.some(hh => hh.command?.includes('agentwatch'))
