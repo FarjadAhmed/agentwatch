@@ -1,6 +1,6 @@
 {
   "name": "agentwatch-dev",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "See what AI coding agents do on your machine. Session logging + dashboard for Claude Code.",
   "bin": {
     "agentwatch": "bin/agentwatch"
